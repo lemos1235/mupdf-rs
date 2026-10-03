@@ -206,6 +206,55 @@ fn patch_mupdf_sources(build_dir: &Path) -> Result<()> {
         }
     }
 
+    // FZ_STEXT_ACCURATE_SIDE_BEARINGS is meant to widen a char's quad to the
+    // glyph's ink on both sides, but stores the glyph's right edge (x1) in the
+    // descender (d.y): every quad's bottom edge lands x1 above the baseline
+    // and the right side is never widened. Widening can't go through a and d
+    // either, as each moves a whole edge: the top corners are p + a, q + a
+    // and the bottom ones p + d, q + d, with p the origin and q the origin
+    // plus the advance. Move the left corners by lo and the right ones by ro
+    // instead, so the left edge reaches x0 and the right edge x1; the advance
+    // is taken from p to q, since PDF widths and Tc/Tw move q. The
+    // non-accurate path passes placeholder glyph ids (-1, -2), which have no
+    // bounds to widen to.
+    let path = build_dir.join("source/fitz/stext-device.c");
+    let mut source =
+        fs::read_to_string(&path).map_err(|e| format!("Unable to read {}: {e}", path.display()))?;
+    source = source.replace("\r\n", "\n");
+
+    let patches = [
+        (
+            "\tfz_point a, d;\n\n\tif (!line->first_char)\n",
+            "\tfz_point a, d, lo = { 0, 0 }, ro = { 0, 0 };\n\n\tif (!line->first_char)\n",
+        ),
+        (
+            "\t\tif (dev_flags & FZ_STEXT_ACCURATE_SIDE_BEARINGS)\n\t\t{\n\t\t\tif (!bounded)\n\t\t\t\tbounds = fz_bound_glyph(ctx, font, glyph, fz_identity);\n\t\t\tif (a.x > bounds.x0)\n\t\t\t\ta.x = bounds.x0;\n\t\t\tif (d.y < bounds.x1)\n\t\t\t\td.y = bounds.x1;\n\t\t}\n",
+            "\t\tif ((dev_flags & FZ_STEXT_ACCURATE_SIDE_BEARINGS) && glyph >= 0)\n\t\t{\n\t\t\tfz_point adv;\n\t\t\tif (!bounded)\n\t\t\t\tbounds = fz_bound_glyph(ctx, font, glyph, fz_identity);\n\t\t\tadv = fz_transform_vector(fz_make_point(q->x - p->x, q->y - p->y), fz_invert_matrix(trm));\n\t\t\tif (bounds.x0 < 0)\n\t\t\t\tlo.x = bounds.x0;\n\t\t\tif (bounds.x1 > adv.x)\n\t\t\t\tro.x = bounds.x1 - adv.x;\n\t\t}\n",
+        ),
+        (
+            "\ta = fz_transform_vector(a, trm);\n\td = fz_transform_vector(d, trm);\n\n\tch->quad.ll = fz_make_point(p->x + d.x, p->y + d.y);\n\tch->quad.ul = fz_make_point(p->x + a.x, p->y + a.y);\n\tch->quad.lr = fz_make_point(q->x + d.x, q->y + d.y);\n\tch->quad.ur = fz_make_point(q->x + a.x, q->y + a.y);\n",
+            "\ta = fz_transform_vector(a, trm);\n\td = fz_transform_vector(d, trm);\n\tlo = fz_transform_vector(lo, trm);\n\tro = fz_transform_vector(ro, trm);\n\n\tch->quad.ll = fz_make_point(p->x + lo.x + d.x, p->y + lo.y + d.y);\n\tch->quad.ul = fz_make_point(p->x + lo.x + a.x, p->y + lo.y + a.y);\n\tch->quad.lr = fz_make_point(q->x + ro.x + d.x, q->y + ro.y + d.y);\n\tch->quad.ur = fz_make_point(q->x + ro.x + a.x, q->y + ro.y + a.y);\n",
+        ),
+    ];
+    // The pieces only work together, so apply all of them or none.
+    if !patches.iter().all(|(_, new)| source.contains(new)) {
+        if patches
+            .iter()
+            .all(|(old, _)| source.matches(old).count() == 1)
+        {
+            for (old, new) in patches {
+                source = source.replacen(old, new, 1);
+            }
+            fs::write(&path, source)
+                .map_err(|e| format!("Unable to write {}: {e}", path.display()))?;
+        } else {
+            println!(
+                "cargo:warning=Unable to patch accurate side bearings in {}; expected MuPDF stext snippets were not found",
+                path.display()
+            );
+        }
+    }
+
     Ok(())
 }
 

@@ -313,8 +313,20 @@ mod tests {
     /// `font`, which the page names but does not embed, so MuPDF asks the
     /// font loader for it.
     fn extracted_i_height(font: &str) -> f32 {
+        let quad = extracted_i_quad(font, None, crate::TextPageFlags::ACCURATE_BBOXES);
+        quad.ll.y - quad.ul.y
+    }
+
+    /// The quad text extraction reports for `i` shown at 100pt in `font`,
+    /// as [`extracted_i_height`] sets it up, advancing by `width` thousandths
+    /// of an em if given.
+    fn extracted_i_quad(
+        font: &str,
+        width: Option<i32>,
+        flags: crate::TextPageFlags,
+    ) -> crate::Quad {
         use crate::pdf::PdfDocument;
-        use crate::{Buffer, Size, TextPageFlags};
+        use crate::{Buffer, Size};
 
         let mut doc = PdfDocument::new();
         let page = doc.new_page(Size::A4).unwrap();
@@ -322,6 +334,17 @@ mod tests {
         let mut font_obj = doc.new_dict().unwrap();
         for (key, name) in [("Type", "Font"), ("Subtype", "Type1"), ("BaseFont", font)] {
             font_obj.dict_put(key, doc.new_name(name).unwrap()).unwrap();
+        }
+        if let Some(width) = width {
+            let mut widths = doc.new_array().unwrap();
+            widths.array_push(doc.new_int(width).unwrap()).unwrap();
+            font_obj
+                .dict_put("FirstChar", doc.new_int(i32::from(b'i')).unwrap())
+                .unwrap();
+            font_obj
+                .dict_put("LastChar", doc.new_int(i32::from(b'i')).unwrap())
+                .unwrap();
+            font_obj.dict_put("Widths", widths).unwrap();
         }
         let mut fonts = doc.new_dict().unwrap();
         fonts.dict_put("F1", font_obj).unwrap();
@@ -331,13 +354,12 @@ mod tests {
         let stream = doc.add_stream(&content, None, false).unwrap();
         page.object().dict_put("Contents", stream).unwrap();
 
-        let text_page = page.to_text_page(TextPageFlags::ACCURATE_BBOXES).unwrap();
+        let text_page = page.to_text_page(flags).unwrap();
         let block = text_page.blocks().next().expect("a block");
         let line = block.lines().next().expect("a line");
         let ch = line.chars().next().expect("a char");
         assert_eq!(ch.char(), Some('i'));
-        let quad = ch.quad();
-        quad.ll.y - quad.ul.y
+        ch.quad()
     }
 
     /// With `ACCURATE_BBOXES` a char's quad spans its glyph's box vertically:
@@ -352,6 +374,36 @@ mod tests {
 
         assert!(glyph < 100.0, "glyph bbox expected: {glyph}");
         assert!(whole > 100.0, "font bbox expected: {whole}");
+    }
+
+    /// Side bearings widen a char's quad to its glyph's ink, here past an
+    /// advance of a tenth of an em: the quad stays a rectangle, with the
+    /// glyph box's vertical extent, and the one without them inside it.
+    #[test]
+    fn side_bearings_widen_quads_to_glyph_ink() {
+        use crate::TextPageFlags;
+
+        set_font_loader(TestLoader);
+
+        let quad = |flags| extracted_i_quad("MupdfRsGlyphBboxTest", Some(100), flags);
+        let plain = quad(TextPageFlags::ACCURATE_BBOXES);
+        let sides = quad(TextPageFlags::ACCURATE_BBOXES | TextPageFlags::ACCURATE_SIDE_BEARINGS);
+
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(
+            close(sides.ul.x, sides.ll.x) && close(sides.ur.x, sides.lr.x),
+            "{sides:?}"
+        );
+        assert!(
+            close(sides.ul.y, plain.ul.y) && close(sides.ur.y, plain.ur.y),
+            "{plain:?} {sides:?}"
+        );
+        assert!(
+            close(sides.ll.y, plain.ll.y) && close(sides.lr.y, plain.lr.y),
+            "{plain:?} {sides:?}"
+        );
+        assert!(sides.ul.x <= plain.ul.x + 0.01, "{plain:?} {sides:?}");
+        assert!(sides.ur.x > plain.ur.x + 1.0, "{plain:?} {sides:?}");
     }
 
     #[test]
