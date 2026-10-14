@@ -129,16 +129,18 @@ static SYSTEM_LOOKUPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec
 ))]
 impl font_loader::FontLoader for SystemFontLoader {
     fn load_font(&self, name: &str, hints: FontHints) -> Option<Font> {
-        let cached = system_font_cache::lookup(name, hints)?;
-        let font =
-            Font::from_static_bytes_with_index(&cached.name, cached.index, cached.data).ok()?;
-
-        if hints.needs_exact_metrics
-            && ((hints.bold && !font.is_bold()) || (hints.italic && !font.is_italic()))
-        {
+        // MuPDF asks for exact metrics only for a base-14 font without a
+        // descriptor, and falls back to its built-in base-14 face when this
+        // returns nothing, which is what hosts without the font always get.
+        // A system face is no better there and can be worse: macOS's
+        // `Times-Bold` (in Times.ttc) marks itself regular in OS/2
+        // `fsSelection`, so MuPDF reads the text as not bold, and the font
+        // takes its family name, `Times`, dropping the style suffix.
+        if hints.needs_exact_metrics {
             return None;
         }
-        Some(font)
+        let cached = system_font_cache::lookup(name, hints)?;
+        Font::from_static_bytes_with_index(&cached.name, cached.index, cached.data).ok()
     }
 
     fn load_cjk_font(&self, _name: &str, ordering: CjkFontOrdering, serif: bool) -> Option<Font> {
@@ -361,8 +363,8 @@ mod system_font_cache {
     static CACHE: Mutex<Option<HashMap<Key, Option<Arc<CachedFont>>>>> = Mutex::new(None);
 
     /// The system font matching `name` and the bold/italic hints, or `None`
-    /// if there is none. `needs_exact_metrics` is not part of the key: it is
-    /// a check on the returned font, applied by the caller.
+    /// if there is none. `needs_exact_metrics` is not part of the key: the
+    /// caller never looks a font up for it.
     pub(super) fn lookup(name: &str, hints: FontHints) -> Option<Arc<CachedFont>> {
         let key = Key {
             name: name.to_owned(),

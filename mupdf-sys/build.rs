@@ -206,6 +206,83 @@ fn patch_mupdf_sources(build_dir: &Path) -> Result<()> {
         }
     }
 
+    // MuPDF 92cef4b44 places a marking non-spacing character (U+0302, U+20D7,
+    // U+0338, ...) at the pen, the end of the previous glyph, and appends it
+    // to the current line, instead of where the content stream draws it.
+    // TeX positions accents with their own text matrix, often drawn out of
+    // order, so text extraction then hangs a formula's hat on the end of the
+    // body line above ("defined aŝ") and a vector arrow on the word before.
+    // Preserve the no-glyph path, and keep marks within the preceding glyph's
+    // advance on its line without moving the pen. Use their actual positions
+    // instead of anchoring them at the pen; independently positioned marks
+    // must still go through the normal line/paragraph placement logic.
+    let path = build_dir.join("source/fitz/stext-device.c");
+    let mut source =
+        fs::read_to_string(&path).map_err(|e| format!("Unable to read {}: {e}", path.display()))?;
+    source = source.replace("\r\n", "\n");
+
+    let old = r"	if (cur_line && (glyph == -1 || ucdn_get_general_category(c) == UCDN_GENERAL_CATEGORY_MN))
+	{
+		add_char_to_line(ctx, page, cur_line, trm, font, size, c, (dev->flags & FZ_STEXT_ACCURATE_BBOXES) ? glyph : NON_ACCURATE_GLYPH, &dev->pen, &dev->pen, bidi, dev->color, 0, flags, dev->flags);
+		dev->lastbidi = bidi;
+		dev->lastchar = c;
+		dev->lastline = cur_line;
+		return;
+	}
+";
+    let new = r"	if (cur_line && glyph == -1)
+	{
+		add_char_to_line(ctx, page, cur_line, trm, font, size, c, (dev->flags & FZ_STEXT_ACCURATE_BBOXES) ? glyph : NON_ACCURATE_GLYPH, &dev->pen, &dev->pen, bidi, dev->color, 0, flags, dev->flags);
+		dev->lastbidi = bidi;
+		dev->lastchar = c;
+		dev->lastline = cur_line;
+		return;
+	}
+
+	/* A mark belonging to the preceding glyph must not reset the pen:
+	 * its positioned origin can be behind the glyph's end. Otherwise the
+	 * next base character would acquire a synthetic space or a new line.
+	 * PDF does not identify clusters, so use the previous glyph's advance
+	 * and baseline, with the same tolerances as ordinary line placement.
+	 * Marks drawn elsewhere (e.g. out-of-order TeX accents) fall through. */
+	if (cur_line && cur_line == dev->lastline && size > 0 && adv == 0 && !force_new_line &&
+		cur_line->wmode == wmode && vec_dot(&ndir, &cur_line->dir) >= 0.999f &&
+		ucdn_get_general_category(c) == UCDN_GENERAL_CATEGORY_MN)
+	{
+		float cluster_advance;
+		delta.x = p.x - dev->pen.x;
+		delta.y = p.y - dev->pen.y;
+		spacing = (ndir.x * delta.x + ndir.y * delta.y) / size;
+		base_offset = (-ndir.y * delta.x + ndir.x * delta.y) / size;
+		cluster_advance = (ndir.x * (dev->pen.x - dev->lag_pen.x) +
+			ndir.y * (dev->pen.y - dev->lag_pen.y)) / size;
+		if (fabsf(base_offset) < BASE_MAX_DIST &&
+			spacing >= -fmaxf(cluster_advance, 0) - SPACE_DIST && spacing <= SPACE_DIST)
+		{
+			/* Preserve the normal fake-bold suppression. lag_pen still belongs
+			 * to the base glyph, so compare the last character's actual origin. */
+			if (glyph >= 0 && c == dev->lastchar && cur_line->last_char &&
+				hypotf(p.x - cur_line->last_char->origin.x,
+					p.y - cur_line->last_char->origin.y) / size < FAKE_BOLD_MAX_DIST)
+				return;
+			add_char_to_line(ctx, page, cur_line, trm, font, size, c, (dev->flags & FZ_STEXT_ACCURATE_BBOXES) ? glyph : NON_ACCURATE_GLYPH, &p, &q, bidi, dev->color, 0, flags, dev->flags);
+			dev->lastbidi = bidi;
+			dev->lastchar = c;
+			dev->lastline = cur_line;
+			return;
+		}
+	}
+";
+    if source.contains(old) {
+        source = source.replacen(old, new, 1);
+        fs::write(&path, source).map_err(|e| format!("Unable to write {}: {e}", path.display()))?;
+    } else if !source.contains(new) {
+        println!(
+            "cargo:warning=Unable to patch non-spacing mark placement in {}; expected MuPDF stext snippet was not found",
+            path.display()
+        );
+    }
+
     Ok(())
 }
 
