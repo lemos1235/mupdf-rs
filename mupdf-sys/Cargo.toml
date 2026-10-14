@@ -84,6 +84,13 @@ include = [
     "mupdf/thirdparty/freetype/include",
     "mupdf/scripts/freetype/*.h",
 
+    "mupdf/scripts/cmark-gfm/*.h",
+    "mupdf/thirdparty/cmark-gfm/src/*.c",
+    "mupdf/thirdparty/cmark-gfm/src/*.h",
+    "mupdf/thirdparty/cmark-gfm/src/*.inc",
+    "mupdf/thirdparty/cmark-gfm/extensions/*.c",
+    "mupdf/thirdparty/cmark-gfm/extensions/*.h",
+
     "mupdf/thirdparty/gumbo-parser/src/*.c",
     "mupdf/thirdparty/gumbo-parser/src/*.h",
     "mupdf/thirdparty/gumbo-parser/visualc/include/*.h",
@@ -247,10 +254,10 @@ linker-plugin-lto = []
 zerocopy = ["dep:zerocopy"]
 
 [build-dependencies]
-bindgen = { version = "0.73", default-features = false, features = ["runtime"] }
-cc = "1.0.50"
-pkg-config = "0.3"
-regex = "1.11"
+bindgen = { version = "0.73.2", default-features = false, features = ["runtime"] }
+cc = "1.8.0"
+pkg-config = "0.3.34"
+regex = "1.13.1"
 
 [dependencies]
-zerocopy = { version = "0.8.17", features = ["derive"], optional = true }
+zerocopy = { version = "0.8.63", features = ["derive"], optional = true }
