@@ -167,6 +167,15 @@ impl PdfWriteOptions {
         self
     }
 
+    pub fn use_objstms(&self) -> bool {
+        self.inner.do_use_objstms != 0
+    }
+
+    pub fn set_use_objstms(&mut self, value: bool) -> &mut Self {
+        self.inner.do_use_objstms = if value { 1 } else { 0 };
+        self
+    }
+
     pub fn appearance(&self) -> bool {
         self.inner.do_appearance != 0
     }
@@ -1927,6 +1936,25 @@ mod test {
         let user_pwd = options.user_password();
         assert_eq!(owner_pwd, "abc");
         assert_eq!(user_pwd, "def");
+    }
+
+    #[test]
+    fn test_pdf_write_options_objstms() {
+        let doc = test_document!("../..", "files/dummy.pdf" as PdfDocument).unwrap();
+        let has_objstm = |options: PdfWriteOptions| {
+            let mut buffer = doc.write_with_options(options).unwrap();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut buffer, &mut bytes).unwrap();
+            bytes.windows(7).any(|w| w == b"/ObjStm")
+        };
+
+        let mut options = PdfWriteOptions::default();
+        assert!(!options.use_objstms());
+        assert!(!has_objstm(options));
+
+        options.set_use_objstms(true);
+        assert!(options.use_objstms());
+        assert!(has_objstm(options));
     }
 
     #[test]
